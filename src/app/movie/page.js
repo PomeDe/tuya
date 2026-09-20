@@ -1,14 +1,9 @@
 'use client';
 
-import Link from "next/link";
-
 import React, { useState, useEffect, useRef } from 'react';
 
-const initialMovies = [
-];
-
-// Phone photos are often 3-10 MB, but localStorage only holds ~5 MB in total.
-// Shrinking covers before saving keeps you from hitting that limit.
+// Phone photos are often 3-10 MB. Shrinking covers before saving keeps
+// the data file (and page load) small.
 const MAX_IMAGE_SIZE = 800; // px, longest side
 
 const compressImage = (file) =>
@@ -32,26 +27,39 @@ const compressImage = (file) =>
   });
 
 export default function Home() {
-  // Initialize with initialMovies so it has layout structure during server-side rendering
-  const [movies, setMovies] = useState(initialMovies);
+  const [movies, setMovies] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   // Modal & Form State
   const [isOpen, setIsOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [title, setTitle] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
 
   const fileInputRef = useRef(null);
 
-  // 1. LOAD MOVIES ON MOUNT
+  // 1. LOAD MOVIES FROM THE SERVER (which reads src/data/movies.jsx)
   useEffect(() => {
-    const savedMovies = localStorage.getItem('my_permanent_movies');
-    if (savedMovies) {
+    let cancelled = false;
+
+    (async () => {
       try {
-        setMovies(JSON.parse(savedMovies));
+        const res = await fetch('/api/movies', { cache: 'no-store' });
+        if (!res.ok) throw new Error('Load failed');
+        const data = await res.json();
+        if (!cancelled) setMovies(data);
       } catch (e) {
-        console.error("Failed to parse stored movies:", e);
+        console.error('Failed to load movies:', e);
+        if (!cancelled) setLoadError(true);
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-    }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Stop the page behind the modal from scrolling on phones
@@ -62,7 +70,7 @@ export default function Home() {
     };
   }, [isOpen]);
 
-  // 2. Pick an image, shrink it, and keep it as a Base64 string
+  // 2. Pick an image and shrink it
   const handleFileChange = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -71,39 +79,50 @@ export default function Home() {
       const compressed = await compressImage(file);
       setPreviewUrl(compressed);
     } catch (e) {
-      console.error("Failed to read image:", e);
+      console.error('Failed to read image:', e);
       alert("Couldn't read that image. Try a different one.");
     }
   };
 
-  // 3. Save the movie
-  const handleSaveMovie = (e) => {
+  // 3. Save the movie: the server appends it to the .jsx file
+  const handleSaveMovie = async (e) => {
     e.preventDefault();
-    if (!title.trim() || !previewUrl) return;
+    if (!title.trim() || !previewUrl || isSaving) return;
 
-    const newMovie = {
-      id: movies.length > 0 ? Math.max(...movies.map(m => m.id)) + 1 : 0,
-      title: title.trim(),
-      cover: previewUrl
-    };
-
-    const updatedMovies = [...movies, newMovie];
-
+    setIsSaving(true);
     try {
-      localStorage.setItem('my_permanent_movies', JSON.stringify(updatedMovies));
-      setMovies(updatedMovies);
+      const res = await fetch('/api/movies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title.trim(), cover: previewUrl }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Save failed');
+      }
+
+      const saved = await res.json();
+      setMovies((prev) => [...prev, saved]);
       closeModal();
     } catch (err) {
-      console.error("Storage error:", err);
-      alert("Your browser's storage is full. Delete a movie and try again.");
+      console.error('Save error:', err);
+      alert("Couldn't save the movie. Please try again.");
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  // Delete a movie
-  const handleDeleteMovie = (idToDelete) => {
-    const updatedMovies = movies.filter(movie => movie.id !== idToDelete);
-    setMovies(updatedMovies);
-    localStorage.setItem('my_permanent_movies', JSON.stringify(updatedMovies));
+  // 4. Delete a movie: the server removes it from the .jsx file
+  const handleDeleteMovie = async (idToDelete) => {
+    try {
+      const res = await fetch(`/api/movies?id=${idToDelete}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setMovies((prev) => prev.filter((movie) => movie.id !== idToDelete));
+    } catch (err) {
+      console.error('Delete error:', err);
+      alert("Couldn't delete the movie. Please try again.");
+    }
   };
 
   // Reset inputs and close modal
@@ -138,25 +157,22 @@ export default function Home() {
           .reveal, .fade-in, .slide-up { animation: none; }
         }
       `}</style>
-<div className="w-full max-w-5xl flex justify-start mb-4 sm:mb-6">
-        <Link
-          href="/"
-          aria-label="Go back"
-          className="inline-flex items-center gap-1.5 min-h-11 pl-3 pr-4 bg-white/20 hover:bg-white/30 active:scale-[0.97] border border-white/30 rounded-full text-white text-sm font-semibold backdrop-blur-md transition-all"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth={2.5}
-            stroke="currentColor"
-            className="w-4 h-4"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-          </svg>
-          <span>Back</span>
-        </Link>
-      </div>
+
+      {/* Status messages */}
+      {isLoading && (
+        <p className="text-neutral-400 text-sm py-8">Loading movies…</p>
+      )}
+      {loadError && (
+        <p className="text-red-300 text-sm py-8 text-center">
+          Couldn't load your movies. Try refreshing the page.
+        </p>
+      )}
+      {!isLoading && !loadError && movies.length === 0 && (
+        <p className="reveal text-neutral-400 text-sm py-8 text-center">
+          No movies yet. Add your first one below.
+        </p>
+      )}
+
       {/* Movie Grid: 2 columns on phones, cards fit their photo so nothing gets cropped */}
       <div className="grid grid-cols-2 lg:grid-cols-3 items-start gap-3 sm:gap-6 w-full max-w-6xl">
         {movies.map((movie, i) => (
@@ -165,10 +181,8 @@ export default function Home() {
             className="reveal bg-neutral-900 rounded-xl overflow-hidden shadow-2xl border border-neutral-800 transition-all duration-200 sm:hover:scale-[1.02] group relative"
             style={{ animationDelay: `${Math.min(i, 8) * 0.08}s` }}
           >
-            {/* Whole photo, natural proportions (h-auto = no cropping) */}
             <img src={movie.cover} alt={movie.title} className="w-full h-auto block" />
 
-            {/* Whole title, wraps onto extra lines instead of being cut off */}
             <div className="p-3 sm:p-4">
               <h2 className="text-base sm:text-xl font-bold tracking-tight leading-snug break-words">
                 {movie.title}
@@ -218,9 +232,7 @@ export default function Home() {
 
                 {previewUrl ? (
                   <div className="relative group rounded-lg overflow-hidden border border-neutral-700 bg-neutral-800">
-                    {/* Full preview, not cropped */}
                     <img src={previewUrl} alt="Preview" className="w-full max-h-72 object-contain mx-auto block" />
-                    {/* Visible on phones (no hover), hover-only on desktop */}
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
@@ -241,7 +253,7 @@ export default function Home() {
                 )}
               </div>
 
-              {/* Title Input (text-base stops iOS from zooming in on focus) */}
+              {/* Title Input */}
               <div>
                 <label htmlFor="movie-title" className="block text-sm font-medium text-neutral-400 mb-1">Movie Title</label>
                 <input
@@ -260,16 +272,17 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={closeModal}
-                  className="flex-1 sm:flex-none min-h-11 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-medium py-2 px-5 rounded-lg transition-colors"
+                  disabled={isSaving}
+                  className="flex-1 sm:flex-none min-h-11 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-300 font-medium py-2 px-5 rounded-lg transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={!title.trim() || !previewUrl}
+                  disabled={!title.trim() || !previewUrl || isSaving}
                   className="flex-1 sm:flex-none min-h-11 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 px-5 rounded-lg transition-colors"
                 >
-                  Add Movie
+                  {isSaving ? 'Saving…' : 'Add Movie'}
                 </button>
               </div>
 

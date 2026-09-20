@@ -3,42 +3,41 @@
 import Link from "next/link";
 import React, { useState, useEffect } from 'react';
 
-const initialLetters = [
-  {
-    id: 0,
-    title: "Welcome Note",
-    date: "2026-09-20",
-    content: "Thank you for exploring this space. Tap any letter inside the dashboard grid to expand it and read its full message layout smoothly."
-  },
-  {
-    id: 1,
-    title: "Project Milestone",
-    date: "2026-09-19",
-    content: "The dynamic persistent interface is now online. Upgraded from basic local prompts to a dedicated dark-mode typography stack."
-  }
-];
-
 export default function LettersPage() {
-  const [letters, setLetters] = useState(initialLetters);
+  const [letters, setLetters] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   // Modal toggles & content states
   const [isOpen, setIsOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [activeLetter, setActiveLetter] = useState(null); // Letter currently being read
 
   // Form input fields
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
 
-  // 1. Load saved letters on mount
+  // 1. LOAD LETTERS FROM THE SERVER (which reads src/data/letters.jsx)
   useEffect(() => {
-    const savedLetters = localStorage.getItem('my_permanent_letters');
-    if (savedLetters) {
+    let cancelled = false;
+
+    (async () => {
       try {
-        setLetters(JSON.parse(savedLetters));
+        const res = await fetch('/api/letters', { cache: 'no-store' });
+        if (!res.ok) throw new Error('Load failed');
+        const data = await res.json();
+        if (!cancelled) setLetters(data);
       } catch (e) {
-        console.error("Failed to parse stored letters:", e);
+        console.error('Failed to load letters:', e);
+        if (!cancelled) setLoadError(true);
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-    }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Stop the page behind a modal from scrolling on phones
@@ -49,39 +48,54 @@ export default function LettersPage() {
     };
   }, [isOpen, activeLetter]);
 
-  // 2. Save a new letter
-  const handleSaveLetter = (e) => {
+  // 2. Save a new letter: the server adds it to the .jsx file
+  const handleSaveLetter = async (e) => {
     e.preventDefault();
-    if (!title.trim() || !content.trim()) return;
+    if (!title.trim() || !content.trim() || isSaving) return;
 
-    const newLetter = {
-      id: letters.length > 0 ? Math.max(...letters.map(l => l.id)) + 1 : 0,
-      title: title.trim(),
-      date: new Date().toISOString().split('T')[0], // YYYY-MM-DD
-      content: content.trim()
-    };
+    setIsSaving(true);
+    try {
+      const res = await fetch('/api/letters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title.trim(), content: content.trim() }),
+      });
 
-    const updatedLetters = [newLetter, ...letters]; // newest first
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Save failed');
+      }
 
-    setLetters(updatedLetters);
-    localStorage.setItem('my_permanent_letters', JSON.stringify(updatedLetters));
-    closeModal();
+      const saved = await res.json();
+      setLetters((prev) => [saved, ...prev]); // newest first
+      closeModal();
+    } catch (err) {
+      console.error('Save error:', err);
+      alert("Couldn't save the letter. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  // 3. Delete a letter
-  const handleDeleteLetter = (e, idToDelete) => {
+  // 3. Delete a letter: the server removes it from the .jsx file
+  const handleDeleteLetter = async (e, idToDelete) => {
     e.stopPropagation(); // Don't open the reader when tapping delete
 
-    // The delete button is always visible on touch screens now,
+    // The delete button is always visible on touch screens,
     // so ask first to avoid accidental taps wiping a letter.
     if (!window.confirm("Delete this letter?")) return;
 
-    const updatedLetters = letters.filter(letter => letter.id !== idToDelete);
-    setLetters(updatedLetters);
-    localStorage.setItem('my_permanent_letters', JSON.stringify(updatedLetters));
+    try {
+      const res = await fetch(`/api/letters?id=${idToDelete}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
 
-    if (activeLetter?.id === idToDelete) {
-      setActiveLetter(null);
+      setLetters((prev) => prev.filter((letter) => letter.id !== idToDelete));
+      if (activeLetter?.id === idToDelete) {
+        setActiveLetter(null);
+      }
+    } catch (err) {
+      console.error('Delete error:', err);
+      alert("Couldn't delete the letter. Please try again.");
     }
   };
 
@@ -93,7 +107,9 @@ export default function LettersPage() {
 
   return (
     <div className="min-h-dvh bg-linear-to-br from-neutral-700 to-neutral-950 text-white px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(2rem,env(safe-area-inset-bottom))] sm:px-8 sm:pt-16 sm:pb-8 flex flex-col items-center justify-start font-sans">
-  <style>{`
+
+      {/* Animations */}
+      <style>{`
         @keyframes fadeUp {
           from { opacity: 0; transform: translateY(18px) scale(0.97); }
           to   { opacity: 1; transform: translateY(0) scale(1); }
@@ -113,6 +129,7 @@ export default function LettersPage() {
           .reveal, .fade-in, .slide-up { animation: none; }
         }
       `}</style>
+
       {/* Back button */}
       <div className="reveal w-full max-w-5xl flex justify-start mb-4 sm:mb-6">
         <Link
@@ -148,19 +165,31 @@ export default function LettersPage() {
         </button>
       </div>
 
-      {/* Letters Grid */}
-      {letters.length === 0 ? (
+      {/* Status messages */}
+      {isLoading && (
+        <p className="text-neutral-400 text-sm py-8">Loading letters…</p>
+      )}
+      {loadError && (
+        <p className="text-red-300 text-sm py-8 text-center">
+          Couldn't load your letters. Try refreshing the page.
+        </p>
+      )}
+      {!isLoading && !loadError && letters.length === 0 && (
         <div className="reveal text-center py-16 sm:py-20 text-neutral-500 max-w-md">
           <p className="text-lg">No letters available.</p>
           <p className="text-sm mt-1">Tap the button above to write your first letter.</p>
         </div>
-      ) : (
-        <div className="reveal grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 w-full max-w-5xl">
-          {letters.map((letter) => (
+      )}
+
+      {/* Letters Grid */}
+      {letters.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 w-full max-w-5xl">
+          {letters.map((letter, i) => (
             <div
               key={letter.id}
               onClick={() => setActiveLetter(letter)}
-              className="bg-neutral-900 rounded-xl p-4 sm:p-5 pb-14 border border-neutral-800 min-h-44 sm:min-h-48 cursor-pointer active:scale-[0.99] sm:hover:border-neutral-700 transition-all group relative shadow-md sm:hover:shadow-xl"
+              className="reveal bg-neutral-900 rounded-xl p-4 sm:p-5 pb-14 border border-neutral-800 min-h-44 sm:min-h-48 cursor-pointer active:scale-[0.99] sm:hover:border-neutral-700 transition-all group relative shadow-md sm:hover:shadow-xl"
+              style={{ animationDelay: `${Math.min(i, 8) * 0.08}s` }}
             >
               <div className="flex justify-between items-start gap-4 mb-2">
                 <h2 className="text-lg font-bold tracking-tight text-neutral-100 truncate w-full">{letter.title}</h2>
@@ -184,8 +213,8 @@ export default function LettersPage() {
 
       {/* MODAL 1: WRITE A NEW LETTER (bottom sheet on phones, centered on larger screens) */}
       {isOpen && (
-        <div className="reveal fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm sm:p-4">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-t-2xl sm:rounded-2xl w-full max-w-xl max-h-[92dvh] overflow-y-auto p-5 sm:p-6 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
+        <div className="fade-in fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm sm:p-4">
+          <div className="slide-up bg-neutral-900 border border-neutral-800 rounded-t-2xl sm:rounded-2xl w-full max-w-xl max-h-[92dvh] overflow-y-auto p-5 sm:p-6 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
             <h3 className="text-xl font-bold mb-4 border-b border-neutral-800 pb-2">Write a Letter</h3>
 
             <form onSubmit={handleSaveLetter} className="space-y-4">
@@ -220,16 +249,17 @@ export default function LettersPage() {
                 <button
                   type="button"
                   onClick={closeModal}
-                  className="flex-1 sm:flex-none min-h-11 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-sm font-semibold py-2 px-5 rounded-lg transition-colors"
+                  disabled={isSaving}
+                  className="flex-1 sm:flex-none min-h-11 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-300 text-sm font-semibold py-2 px-5 rounded-lg transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={!title.trim() || !content.trim()}
+                  disabled={!title.trim() || !content.trim() || isSaving}
                   className="flex-1 sm:flex-none min-h-11 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold py-2 px-5 rounded-lg transition-colors"
                 >
-                  Store Letter
+                  {isSaving ? 'Saving…' : 'Store Letter'}
                 </button>
               </div>
             </form>
@@ -241,11 +271,11 @@ export default function LettersPage() {
       {activeLetter && (
         <div
           onClick={() => setActiveLetter(null)}
-          className="reveal fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm sm:p-4"
+          className="fade-in fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm sm:p-4"
         >
           <div
             onClick={(e) => e.stopPropagation()} // Tapping the text shouldn't close it
-            className="bg-neutral-900 border border-neutral-800 rounded-t-2xl sm:rounded-2xl w-full max-w-2xl p-5 sm:p-8 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl max-h-[88dvh] flex flex-col"
+            className="slide-up bg-neutral-900 border border-neutral-800 rounded-t-2xl sm:rounded-2xl w-full max-w-2xl p-5 sm:p-8 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl max-h-[88dvh] flex flex-col"
           >
             <div className="flex justify-between items-start gap-4 border-b border-neutral-800 pb-4 mb-4">
               <div className="min-w-0">
