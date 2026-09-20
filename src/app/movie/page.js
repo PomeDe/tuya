@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 
 // Phone photos are often 3-10 MB. Shrinking covers before saving keeps
 // the data file (and page load) small.
-const MAX_IMAGE_SIZE = 800; // px, longest side
+const MAX_IMAGE_SIZE = 600; // px, longest side
 
 const compressImage = (file) =>
   new Promise((resolve, reject) => {
@@ -19,7 +19,7 @@ const compressImage = (file) =>
         canvas.width = Math.round(img.width * scale);
         canvas.height = Math.round(img.height * scale);
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.8));
+        resolve(canvas.toDataURL('image/jpeg', 0.7));
       };
       img.src = reader.result;
     };

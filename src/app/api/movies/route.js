@@ -1,59 +1,40 @@
 // Put this file at: src/app/api/movies/route.js
 //
-// Browsers can't write to files, so the page talks to this route and this
-// route reads/writes src/data/movies.jsx on the server.
+// Stores movies in Upstash Redis instead of a file, because Vercel's disk is read-only.
+// Needs two environment variables (see setup steps): a REST URL and a REST token.
 
-import { promises as fs } from 'fs';
-import path from 'path';
+import { Redis } from '@upstash/redis';
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const FILE = path.join(process.cwd(), 'src', 'data', 'movies.jsx');
+const HASH = 'movies';          // one hash: field = movie id, value = the movie
+const COUNTER = 'movies:nextId'; // atomic counter for new ids
 
-const HEADER =
-  '// Saved movies. This file is rewritten automatically by /api/movies.\n' +
-  '// Avoid editing it by hand while the server is running.\n\n';
+// Covers are shrunk in the browser; this is just a safety net against huge uploads
+const MAX_COVER_CHARS = 700_000;
 
-const MARKER = 'export const movies =';
+// Accepts either the Upstash names or the older Vercel KV names
+const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
 
-// Read the array back out of the .jsx file
-async function readMovies() {
-  try {
-    const raw = await fs.readFile(FILE, 'utf8');
-    const markerAt = raw.indexOf(MARKER);
-    if (markerAt === -1) return [];
-    const start = raw.indexOf('[', markerAt);
-    const end = raw.lastIndexOf(']');
-    if (start === -1 || end === -1) return [];
-    return JSON.parse(raw.slice(start, end + 1));
-  } catch (err) {
-    if (err.code === 'ENOENT') return []; // file doesn't exist yet
-    throw err;
+function getRedis() {
+  if (!url || !token) {
+    throw new Error(
+      'Missing Redis env vars: set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN'
+    );
   }
-}
-
-// Write the array into the .jsx file (temp file + rename so a crash can't leave it half-written)
-async function writeMovies(movies) {
-  await fs.mkdir(path.dirname(FILE), { recursive: true });
-  const content = `${HEADER}${MARKER} ${JSON.stringify(movies, null, 2)};\n`;
-  const tmp = `${FILE}.tmp`;
-  await fs.writeFile(tmp, content, 'utf8');
-  await fs.rename(tmp, FILE);
-}
-
-// Run read-modify-write jobs one at a time so two requests can't overwrite each other
-let lock = Promise.resolve();
-function withLock(task) {
-  const run = lock.then(task);
-  lock = run.catch(() => {});
-  return run;
+  return new Redis({ url, token });
 }
 
 export async function GET() {
   try {
-    return NextResponse.json(await readMovies());
+    const data = await getRedis().hgetall(HASH); // null when empty
+    const movies = Object.values(data ?? {})
+      .map((v) => (typeof v === 'string' ? JSON.parse(v) : v))
+      .sort((a, b) => a.id - b.id);
+    return NextResponse.json(movies);
   } catch (err) {
     console.error('Failed to read movies:', err);
     return NextResponse.json({ error: 'Could not read movies' }, { status: 500 });
@@ -69,19 +50,16 @@ export async function POST(request) {
     if (!title || !cover.startsWith('data:image/')) {
       return NextResponse.json({ error: 'A title and an image are required' }, { status: 400 });
     }
+    if (cover.length > MAX_COVER_CHARS) {
+      return NextResponse.json({ error: 'That image is too large' }, { status: 413 });
+    }
 
-    const newMovie = await withLock(async () => {
-      const movies = await readMovies();
-      const movie = {
-        id: movies.length > 0 ? Math.max(...movies.map((m) => m.id)) + 1 : 0,
-        title,
-        cover,
-      };
-      await writeMovies([...movies, movie]);
-      return movie;
-    });
+    const redis = getRedis();
+    const id = await redis.incr(COUNTER);
+    const movie = { id, title, cover };
+    await redis.hset(HASH, { [id]: movie });
 
-    return NextResponse.json(newMovie, { status: 201 });
+    return NextResponse.json(movie, { status: 201 });
   } catch (err) {
     console.error('Failed to save movie:', err);
     return NextResponse.json({ error: 'Could not save the movie' }, { status: 500 });
@@ -95,11 +73,7 @@ export async function DELETE(request) {
       return NextResponse.json({ error: 'A valid id is required' }, { status: 400 });
     }
 
-    await withLock(async () => {
-      const movies = await readMovies();
-      await writeMovies(movies.filter((m) => m.id !== id));
-    });
-
+    await getRedis().hdel(HASH, String(id));
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('Failed to delete movie:', err);

@@ -1,59 +1,37 @@
 // Put this file at: src/app/api/letters/route.js
 //
-// Browsers can't write to files, so the page talks to this route and this
-// route reads/writes src/data/letters.jsx on the server.
+// Stores letters in Upstash Redis instead of a file, because Vercel's disk is read-only.
+// Needs two environment variables (see setup steps): a REST URL and a REST token.
 
-import { promises as fs } from 'fs';
-import path from 'path';
+import { Redis } from '@upstash/redis';
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const FILE = path.join(process.cwd(), 'src', 'data', 'letters.jsx');
+const HASH = 'letters';          // one hash: field = letter id, value = the letter
+const COUNTER = 'letters:nextId'; // atomic counter for new ids
 
-const HEADER =
-  '// Saved letters. This file is rewritten automatically by /api/letters.\n' +
-  '// Avoid editing it by hand while the server is running.\n\n';
+// Accepts either the Upstash names or the older Vercel KV names
+const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
 
-const MARKER = 'export const letters =';
-
-// Read the array back out of the .jsx file
-async function readLetters() {
-  try {
-    const raw = await fs.readFile(FILE, 'utf8');
-    const markerAt = raw.indexOf(MARKER);
-    if (markerAt === -1) return [];
-    const start = raw.indexOf('[', markerAt);
-    const end = raw.lastIndexOf(']');
-    if (start === -1 || end === -1) return [];
-    return JSON.parse(raw.slice(start, end + 1));
-  } catch (err) {
-    if (err.code === 'ENOENT') return []; // file doesn't exist yet
-    throw err;
+function getRedis() {
+  if (!url || !token) {
+    throw new Error(
+      'Missing Redis env vars: set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN'
+    );
   }
-}
-
-// Write the array into the .jsx file (temp file + rename so a crash can't leave it half-written)
-async function writeLetters(letters) {
-  await fs.mkdir(path.dirname(FILE), { recursive: true });
-  const content = `${HEADER}${MARKER} ${JSON.stringify(letters, null, 2)};\n`;
-  const tmp = `${FILE}.tmp`;
-  await fs.writeFile(tmp, content, 'utf8');
-  await fs.rename(tmp, FILE);
-}
-
-// Run read-modify-write jobs one at a time so two requests can't overwrite each other
-let lock = Promise.resolve();
-function withLock(task) {
-  const run = lock.then(task);
-  lock = run.catch(() => {});
-  return run;
+  return new Redis({ url, token });
 }
 
 export async function GET() {
   try {
-    return NextResponse.json(await readLetters());
+    const data = await getRedis().hgetall(HASH); // null when empty
+    const letters = Object.values(data ?? {})
+      .map((v) => (typeof v === 'string' ? JSON.parse(v) : v))
+      .sort((a, b) => b.id - a.id); // newest first
+    return NextResponse.json(letters);
   } catch (err) {
     console.error('Failed to read letters:', err);
     return NextResponse.json({ error: 'Could not read letters' }, { status: 500 });
@@ -70,19 +48,17 @@ export async function POST(request) {
       return NextResponse.json({ error: 'A title and content are required' }, { status: 400 });
     }
 
-    const newLetter = await withLock(async () => {
-      const letters = await readLetters();
-      const letter = {
-        id: letters.length > 0 ? Math.max(...letters.map((l) => l.id)) + 1 : 0,
-        title,
-        date: new Date().toISOString().split('T')[0], // YYYY-MM-DD
-        content,
-      };
-      await writeLetters([letter, ...letters]); // newest first
-      return letter;
-    });
+    const redis = getRedis();
+    const id = await redis.incr(COUNTER);
+    const letter = {
+      id,
+      title,
+      date: new Date().toISOString().split('T')[0], // YYYY-MM-DD
+      content,
+    };
+    await redis.hset(HASH, { [id]: letter });
 
-    return NextResponse.json(newLetter, { status: 201 });
+    return NextResponse.json(letter, { status: 201 });
   } catch (err) {
     console.error('Failed to save letter:', err);
     return NextResponse.json({ error: 'Could not save the letter' }, { status: 500 });
@@ -96,11 +72,7 @@ export async function DELETE(request) {
       return NextResponse.json({ error: 'A valid id is required' }, { status: 400 });
     }
 
-    await withLock(async () => {
-      const letters = await readLetters();
-      await writeLetters(letters.filter((l) => l.id !== id));
-    });
-
+    await getRedis().hdel(HASH, String(id));
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('Failed to delete letter:', err);
