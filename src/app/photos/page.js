@@ -22,11 +22,11 @@ const data = [
     },
         {
         id: 4,
-        src: "/pic5.jpg"
+        src: "/pic5.JPG"
     },
         {
         id: 5,
-        src: "/pic6.jpg"
+        src: "/pic6.JPG"
     }
 ];
 
