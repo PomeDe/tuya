@@ -16,6 +16,7 @@ const links = [
   { href: "/movie", label: "Our movie list" },
   { href: "/photos", label: "My favorite photos of u" },
   { href: "/letters", label: "The letters" },
+  { href: "/game", label: "Cool Game"}
 ]
 
 export default function Home() {
