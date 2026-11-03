@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState } from "react";
+import CatSprite from '@/components/CatSprite';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -977,7 +978,6 @@ export default function DrawingApp() {
             className="block h-auto w-full cursor-crosshair touch-none rounded-lg border border-gray-300 bg-white shadow-sm"
           />
         </div>
-
         {/* Timeline */}
         <section className="mt-3 w-full max-w-[800px] rounded-lg border border-gray-200 bg-white p-2" aria-label="Timeline">
           <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -1095,6 +1095,7 @@ export default function DrawingApp() {
           </ul>
         </fieldset>
       </aside>
+              <CatSprite/>
     </div>
   );
 }

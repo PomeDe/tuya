@@ -6,6 +6,7 @@
 import { Redis } from '@upstash/redis';
 import { NextResponse } from 'next/server';
 
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -13,8 +14,8 @@ const HASH = 'letters';          // one hash: field = letter id, value = the let
 const COUNTER = 'letters:nextId'; // atomic counter for new ids
 
 // Accepts either the Upstash names or the older Vercel KV names
-const url = process.env.TUYA_UPSTASH_REDIS_REST_URL || process.env.TUYA_KV_REST_API_URL;
-const token = process.env.TUYA_UPSTASH_REDIS_REST_TOKEN || process.env.TUYA_KV_REST_API_TOKEN;
+const url = process.env.Tuya_KV_REST_API_URL;
+const token = process.env.Tuya_KV_REST_API_TOKEN;
 
 function getRedis() {
   if (!url || !token) {
